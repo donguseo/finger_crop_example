@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -35,9 +36,73 @@ class _MyHomePageState extends State<MyHomePage> {
   List<Offset> points = <Offset>[];
   ByteData imgBytes;
   ui.Image image;
+  bool remover = false;
+  Completer<Color> colorPick;
 
   @override
   Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: Text('Sketcher'),
+      ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            height: 100,
+            child: Row(
+              children: [
+                IconButton(onPressed: getImage, icon: Icon(Icons.photo)),
+                IconButton(
+                    onPressed: () {
+                      setState(() {
+                        if (image != null) {
+                          image.dispose();
+                          image = null;
+                        }
+                        imgBytes = null;
+                        points.clear();
+                      });
+                    },
+                    icon: Icon(Icons.refresh)),
+                FlatButton(
+                    onPressed: () {
+                      turnIntoGrayscale();
+                    },
+                    child: Text("흑백")),
+                FlatButton(
+                    onPressed: () async {
+                      Color color = await pickColor(context);
+                      deleteColorFromImage(
+                          color.red, color.green, color.blue, color.alpha);
+                    },
+                    child: Text("투명")),
+                IconButton(
+                    onPressed: () {
+                      setState(() {
+                        remover = !remover;
+                      });
+                    },
+                    icon: Icon(
+                      Icons.remove,
+                      color: (remover) ? Colors.red : null,
+                    )),
+                IconButton(onPressed: generateImage, icon: Icon(Icons.send)),
+              ],
+            ),
+          ),
+          Flexible(
+              flex: 1,
+              child: Builder(builder: (context) {
+                return _buildImgView(context);
+              })),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImgView(BuildContext context) {
     final Container sketchArea = Container(
       margin: EdgeInsets.all(1.0),
       alignment: Alignment.topLeft,
@@ -46,56 +111,46 @@ class _MyHomePageState extends State<MyHomePage> {
         painter: Sketcher(points, image),
       ),
     );
+    return imgBytes != null
+        ? Center(
+            child: Image.memory(
+            Uint8List.view(imgBytes.buffer),
+          ))
+        : GestureDetector(
+            onPanDown: (DragDownDetails details) async {
+              if (colorPick != null && !colorPick.isCompleted) {
+                RenderBox box = context.findRenderObject();
+                Offset point = box.globalToLocal(details.globalPosition);
+                await pickColorWithOffset(point);
+                colorPick = null;
+                return;
+              }
+            },
+            onPanUpdate: (DragUpdateDetails details) async {
+              RenderBox box = context.findRenderObject();
+              Offset point = box.globalToLocal(details.globalPosition);
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: Text('Sketcher'),
-      ),
-      body: imgBytes != null
-          ? ClipPath(
-              // clipper: ImageClipper(points),
-              child: Center(
-                  child: Image.memory(
-                Uint8List.view(imgBytes.buffer),
-              )),
-            )
-          : GestureDetector(
-              onPanUpdate: (DragUpdateDetails details) {
-                setState(() {
-                  RenderBox box = context.findRenderObject();
-                  Offset point = box.globalToLocal(details.globalPosition);
-                  point =
-                      point.translate(0.0, -(AppBar().preferredSize.height));
+              if (remover) {
+                deleteImage(point);
+                return;
+              }
+              setState(() {
+                // points = List.from(points)..add(point);
+              });
+            },
+            onPanEnd: (DragEndDetails details) {
+              points.add(null);
+            },
+            child: sketchArea,
+          );
+  }
 
-                  points = List.from(points)..add(point);
-                });
-              },
-              onPanEnd: (DragEndDetails details) {
-                points.add(null);
-              },
-              child: sketchArea,
-            ),
-      floatingActionButton: FloatingActionButton(
-        tooltip: 'clear Screen',
-        backgroundColor: Colors.red,
-        child: Icon(Icons.refresh),
-        onPressed: () {
-          if (image == null) {
-            getImage();
-          } else if (imgBytes != null) {
-            setState(() {
-              image.dispose();
-              image = null;
-              imgBytes = null;
-              points.clear();
-            });
-          } else {
-            generateImage();
-          }
-        },
-      ),
-    );
+  Future<void> pickColorWithOffset(Offset point) async {
+    var data = await image.toByteData();
+    var index = pointToIndex(point);
+    var color = Color.fromARGB(data.getUint8(index + 3), data.getUint8(index),
+        data.getUint8(index + 1), data.getUint8(index + 2));
+    colorPick.complete(color);
   }
 
   Future<void> getImage() async {
@@ -136,11 +191,16 @@ class _MyHomePageState extends State<MyHomePage> {
         }
       }
     }
-    canvas.clipPath(path);
+    if (!path.getBounds().isEmpty) {
+      canvas.clipPath(path);
+    }
 
     if (image != null) {
       paintImage(
-          canvas: canvas, rect: Rect.fromLTRB(0, 0, 400, 400), image: image);
+        canvas: canvas,
+        rect: Rect.fromLTRB(0, 0, 400, 400),
+        image: image,
+      );
     }
 
     final picture = recorder.endRecording();
@@ -151,33 +211,68 @@ class _MyHomePageState extends State<MyHomePage> {
       imgBytes = pngBytes;
     });
   }
-}
 
-class ImageClipper extends CustomClipper<Path> {
-  ImageClipper(this.points);
-
-  List<Offset> points;
-  @override
-  Path getClip(ui.Size size) {
-    var path = Path();
-    if (points == null) {
-      return path;
-    }
-    for (int i = 0; i < points.length - 1; i++) {
-      if (points[i] != null && points[i + 1] != null) {
-        if (i == 0) {
-          path.moveTo(points[i].dx, points[i].dy);
-        } else {
-          path.lineTo(points[i].dx, points[i].dy);
-        }
+  Future<void> deleteColorFromImage(int r, int g, int b, int a,
+      {int offset = 20}) async {
+    ByteData data = await image.toByteData();
+    int length = data.lengthInBytes;
+    for (int i = 0; i < length / 4; i++) {
+      var pr = data.getUint8(i * 4);
+      var pg = data.getUint8(i * 4 + 1);
+      var pb = data.getUint8(i * 4 + 2);
+      var pa = data.getUint8(i * 4 + 3);
+      if ((pr > r - offset && pr < r + offset) &&
+          (pg > g - offset && pg < g + offset) &&
+          (pb > b - offset && pb < b + offset) &&
+          (pa > a - offset && pa < a + offset)) {
+        data.setUint32(i * 4, 0);
       }
     }
-    return path;
+    ui.decodeImageFromPixels(data.buffer.asUint8List(), image.width,
+        image.height, ui.PixelFormat.rgba8888, (result) {
+      setState(() {
+        image = result;
+      });
+    });
   }
 
-  @override
-  bool shouldReclip(covariant CustomClipper<ui.Path> oldClipper) {
-    return false;
+  Future<void> deleteImage(Offset point) async {
+    ByteData data = await image.toByteData();
+    data.setInt32(pointToIndex(point), 0);
+    ui.decodeImageFromPixels(data.buffer.asUint8List(), image.width,
+        image.height, ui.PixelFormat.rgba8888, (result) {
+      setState(() {
+        image = result;
+      });
+    });
+  }
+
+  int pointToIndex(ui.Offset point) =>
+      (point.dx.toInt() * 4 + point.dy.toInt() * 4 * image.width).toInt();
+
+  Future<void> turnIntoGrayscale() async {
+    ByteData data = await image.toByteData();
+    int length = data.lengthInBytes;
+    for (int i = 0; i < length / 4; i++) {
+      var pr = data.getUint8(i * 4);
+      var pg = data.getUint8(i * 4 + 1);
+      var pb = data.getUint8(i * 4 + 2);
+      var avg = ((pr + pg + pb) ~/ 3);
+      data.setUint8(i * 4, avg);
+      data.setUint8(i * 4 + 1, avg);
+      data.setUint8(i * 4 + 2, avg);
+    }
+    ui.decodeImageFromPixels(data.buffer.asUint8List(), image.width,
+        image.height, ui.PixelFormat.rgba8888, (result) {
+      setState(() {
+        image = result;
+      });
+    });
+  }
+
+  Future<Color> pickColor(BuildContext context) {
+    colorPick = Completer();
+    return colorPick.future;
   }
 }
 
@@ -190,7 +285,6 @@ class Sketcher extends CustomPainter {
   @override
   bool shouldRepaint(Sketcher oldDelegate) {
     return true;
-    // oldDelegate.image != image || oldDelegate.points != points;
   }
 
   void paint(Canvas canvas, Size size) {
@@ -201,11 +295,15 @@ class Sketcher extends CustomPainter {
 
     if (image != null) {
       paintImage(
-          canvas: canvas, rect: Rect.fromLTRB(0, 0, 400, 400), image: image);
+        canvas: canvas,
+        rect: Rect.fromLTRB(
+            0, 0, image.width.toDouble(), image.height.toDouble()),
+        image: image,
+      );
     }
 
     paint = Paint()
-      ..color = Colors.black.withAlpha(200)
+      ..color = Colors.black.withAlpha(20)
       ..strokeCap = StrokeCap.round
       ..strokeWidth = 4.0;
     var path = Path();
