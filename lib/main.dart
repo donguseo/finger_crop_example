@@ -18,7 +18,6 @@ void main() {
   runApp(MyApp());
 }
 
-final kCanvasSize = 400.0;
 final radius = 40.0;
 final eraserRadius = 10.0;
 
@@ -490,8 +489,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   painting() async {
     //
-    int rad = 5;
-    int intensityLevels = 4;
+    int rad = 1;
+    int intensityLevels = 200;
     var data = await image.toByteData();
     ByteData target = ByteData(data.lengthInBytes);
     for (int y = 0; y < image.height; y++) {
@@ -500,6 +499,7 @@ class _MyHomePageState extends State<MyHomePage> {
         var averageR = List.filled(intensityLevels + 1, 0);
         var averageG = List.filled(intensityLevels + 1, 0);
         var averageB = List.filled(intensityLevels + 1, 0);
+        var averageA = 0;
         var left = (x - rad).toInt();
         var right = (x + rad).toInt();
         var top = (y - rad).toInt();
@@ -520,6 +520,7 @@ class _MyHomePageState extends State<MyHomePage> {
         if (bottom > image.height) {
           bottom = image.height - 1;
         }
+        int count = 0;
 
         for (int yIn = top; yIn < bottom; yIn++) {
           for (int xIn = left; xIn < right; xIn++) {
@@ -528,12 +529,15 @@ class _MyHomePageState extends State<MyHomePage> {
               var pr = data.getUint8(i);
               var pg = data.getUint8(i + 1);
               var pb = data.getUint8(i + 2);
+              var pa = data.getUint8(i + 3);
               int curIntensity =
                   ((pr + pg + pb) / 3 * intensityLevels / 255.0).round();
               intensityCount[curIntensity]++;
               averageR[curIntensity] += pr;
               averageG[curIntensity] += pg;
               averageB[curIntensity] += pb;
+              averageA += pa;
+              count++;
             }
           }
         }
@@ -548,10 +552,14 @@ class _MyHomePageState extends State<MyHomePage> {
         }
         int index = xyToIndex(x, y, image);
         if (maxIndex >= 0) {
+          var alpha = (averageA / count).round();
+          if (alpha > 255) {
+            alpha = 255;
+          }
           target.setUint8(index, (averageR[maxIndex] / curMax).round());
           target.setUint8(index + 1, (averageG[maxIndex] / curMax).round());
           target.setUint8(index + 2, (averageB[maxIndex] / curMax).round());
-          target.setUint8(index + 3, data.getUint8(index + 3));
+          target.setUint8(index + 3, alpha);
         } else {
           target.setUint8(index + 0, data.getUint8(index + 0));
           target.setUint8(index + 1, data.getUint8(index + 1));
@@ -586,7 +594,7 @@ class Sketcher extends CustomPainter {
   }
 
   void paint(Canvas canvas, Size size) {
-    canvas.clipRect(Rect.fromLTRB(0, 0, 400, 400));
+    canvas.clipRect(Rect.fromLTRB(0, 0, 400, 600));
     Paint paint = Paint()
       ..color = Colors.black
       ..strokeCap = StrokeCap.round
