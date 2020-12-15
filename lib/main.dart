@@ -80,7 +80,15 @@ class _MyHomePageState extends State<MyHomePage> {
                   flex: 1,
                   child: FlatButton(
                     onPressed: getImage,
-                    child: Text('사진\n가져오기'),
+                    child: Text('사진 가져오기'),
+                  ),
+                ),
+                Expanded(
+                  flex: 1,
+                  child: FlatButton(
+                    color: eragerMode == 3 ? Colors.red : null,
+                    onPressed: fingerCrop,
+                    child: Text('잘라내기'),
                   ),
                 ),
                 Expanded(
@@ -88,9 +96,16 @@ class _MyHomePageState extends State<MyHomePage> {
                   child: FlatButton(
                     color: eragerMode == 1 ? Colors.red : null,
                     onPressed: backgroundErager,
-                    child: Text('배경\n지우개'),
+                    child: Text('배경 지우개'),
                   ),
                 ),
+              ],
+            ),
+          ),
+          Container(
+            height: 50,
+            child: Row(
+              children: [
                 Expanded(
                   flex: 1,
                   child: FlatButton(
@@ -110,7 +125,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   flex: 1,
                   child: FlatButton(
                     onPressed: painting,
-                    child: Text('painting\neffect'),
+                    child: Text('painting effect'),
                   ),
                 ),
               ],
@@ -174,7 +189,7 @@ class _MyHomePageState extends State<MyHomePage> {
         point /= scale;
 
         setState(() {
-          if (eragerMode == 1) {
+          if (eragerMode == 1 || eragerMode == 3) {
             bgePoints.add(point);
             return;
           }
@@ -184,6 +199,12 @@ class _MyHomePageState extends State<MyHomePage> {
       onPanEnd: (DragEndDetails details) async {
         if (eragerMode == 1) {
           await removeBg();
+          setState(() {
+            bgePoints.clear();
+          });
+          return;
+        } else if (eragerMode == 3) {
+          await deleteOutSideOfPoints();
           setState(() {
             bgePoints.clear();
           });
@@ -366,25 +387,39 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  fingerCrop() {
+    if (eragerMode == 3) {
+      setState(() {
+        eragerMode = 0;
+      });
+    } else {
+      setState(() {
+        eragerMode = 3;
+      });
+    }
+  }
+
   Future<void> removeBg() async {
     //
-    ByteData data = await image.toByteData();
-    Color selColor;
-    if (bgePoints.length > 0) {
-      selColor = await selectRefColor(
-          data, image.width, image.height, bgePoints[0], radius / 2);
-    }
-    for (final point in bgePoints) {
-      deleteCircle(
-          data, point, radius / 2, selColor, image.width, image.height);
-    }
+    try {
+      ByteData data = await image.toByteData();
+      Color selColor;
+      if (bgePoints.length > 0) {
+        selColor = await selectRefColor(
+            data, image.width, image.height, bgePoints[0], radius / 2);
+      }
+      for (final point in bgePoints) {
+        deleteCircle(
+            data, point, radius / 2, selColor, image.width, image.height);
+      }
 
-    ui.decodeImageFromPixels(data.buffer.asUint8List(), image.width,
-        image.height, ui.PixelFormat.rgba8888, (result) {
-      setState(() {
-        image = result;
+      ui.decodeImageFromPixels(data.buffer.asUint8List(), image.width,
+          image.height, ui.PixelFormat.rgba8888, (result) {
+        setState(() {
+          image = result;
+        });
       });
-    });
+    } catch (e) {}
   }
 
   Future<Color> selectRefColor(
@@ -481,6 +516,60 @@ class _MyHomePageState extends State<MyHomePage> {
         }
       }
     }
+  }
+
+  Future<void> deleteOutSideOfPoints() async {
+    try {
+      ByteData data = await image.toByteData();
+      for (int y = 0; y < image.height; y++) {
+        for (int x = 0; x < image.width; x++) {
+          if (!isInsidePolygon(bgePoints, x, y)) {
+            final i = xyToIndex(x, y, image);
+            data.setUint32(i, 0);
+          }
+        }
+      }
+
+      ui.decodeImageFromPixels(data.buffer.asUint8List(), image.width,
+          image.height, ui.PixelFormat.rgba8888, (result) {
+        setState(() {
+          image = result;
+        });
+      });
+    } catch (e) {}
+  }
+
+  bool isInsidePolygon(List<Offset> path, int x, int y) {
+    int counter = 0;
+    int i;
+    double xinters;
+    Offset p1, p2;
+    if (path == null || path.length == 0) {
+      return false;
+    }
+
+    List<Offset> polygon = List.from(path)..add(path[0]);
+
+    p1 = polygon[0];
+    for (i = 1; i <= polygon.length; i++) {
+      p2 = polygon[i % polygon.length];
+      if (y > min(p1.dy, p2.dy)) {
+        if (y <= max(p1.dy, p2.dy)) {
+          if (x <= max(p1.dx, p2.dx)) {
+            if (p1.dy != p2.dy) {
+              xinters = (y - p1.dy) * (p2.dx - p1.dx) / (p2.dy - p1.dy) + p1.dx;
+              if (p1.dx == p2.dx || x <= xinters) counter++;
+            }
+          }
+        }
+      }
+      p1 = p2;
+    }
+
+    if (counter % 2 == 0)
+      return false;
+    else
+      return true;
   }
 
   double calcDist(double dx, double dy, int x, int y) {
@@ -640,8 +729,13 @@ class Sketcher extends CustomPainter {
     if (bgePoints.length > 2) {
       paint = Paint()
         ..color = Colors.red.withAlpha(50)
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = radius;
+        ..strokeCap = StrokeCap.round;
+      if (eragerMode == 1) {
+        paint.strokeWidth = radius;
+      } else if (eragerMode == 3) {
+        paint.strokeWidth = 2;
+      }
+
       for (int i = 0; i < bgePoints.length; i++) {
         if (i == 0) {
         } else {
